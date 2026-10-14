@@ -39,5 +39,5 @@ Each silhouette is scaled so that its bill-tip → tail-tip distance, measured a
 To redeploy after changing `web/`, commit to `main` and run:
 
 ```
-git subtree push --prefix web origin gh-pages
+git push -f origin $(git commit-tree HEAD:web -m "Deploy web/"):refs/heads/gh-pages
 ```
