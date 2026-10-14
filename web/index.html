@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Big Bird Small Bird</title>
+<style>
+  :root { --red: #e0362c; --ink: #1d1d1b; --bg: #f6f2e8; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 18px; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+  header h1 span { color: var(--red); }
+  #stats { margin-left: auto; font-size: 14px; color: #555; }
+  #prompt { text-align: center; font-size: 18px; padding: 4px 12px 0; min-height: 28px; }
+  #prompt .red { color: var(--red); font-weight: 700; }
+  #prompt .blk { font-weight: 700; }
+  #stage { position: relative; height: calc(100% - 190px); margin: 6px 12px; touch-action: none; user-select: none; }
+  #ground { position: absolute; left: 0; right: 0; height: 2px; background: #cfc6b2; }
+  .bird { position: absolute; -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
+  .bird.black { background: var(--ink); }
+  .bird.red { background: var(--red); cursor: grab; }
+  .bird.red.dragging { cursor: grabbing; }
+  .bird.guess { background: var(--red); opacity: .25; }
+  .bird.truth { background: var(--red); transition: all .6s cubic-bezier(.2,.8,.2,1); }
+  .handle { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; background: #fff;
+    border: 2px solid var(--red); border-radius: 50%; touch-action: none; z-index: 3; }
+  .handle.nw, .handle.se { cursor: nwse-resize; }
+  .handle.ne, .handle.sw { cursor: nesw-resize; }
+  .label { position: absolute; transform: translateX(-50%); font-size: 13px; white-space: nowrap;
+    text-align: center; pointer-events: none; }
+  .label i { color: #777; font-size: 11px; }
+  .label.red { color: var(--red); }
+  footer { position: absolute; bottom: 0; left: 0; right: 0; display: flex; flex-direction: column;
+    align-items: center; gap: 6px; padding: 10px 12px 14px; }
+  #result { font-size: 17px; min-height: 24px; text-align: center; }
+  #result b { font-size: 22px; }
+  button { font: inherit; font-size: 17px; padding: 10px 34px; border-radius: 999px; border: 0;
+    background: var(--ink); color: #fff; cursor: pointer; }
+  button:hover { filter: brightness(1.2); }
+  #credits { font-size: 10px; color: #888; text-align: center; max-width: 900px; min-height: 13px; }
+  #credits a { color: #888; }
+  .hint { font-size: 12px; color: #888; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Big Bird <span>Small</span> Bird</h1>
+  <div id="stats"></div>
+</header>
+<div id="prompt"></div>
+<div id="stage"><div id="ground"></div></div>
+<footer>
+  <div id="result"></div>
+  <button id="btn">Lock in</button>
+  <div id="credits"></div>
+</footer>
+<script>
+const stage = document.getElementById('stage');
+const $ = id => document.getElementById(id);
+const HINT = '<span class="hint">Drag the red bird to move it · drag a corner (or scroll) to resize · sized by bill-to-tail length</span>';
+let birds = [], round = null, locked = false;
+const stats = JSON.parse(localStorage.getItem('bsu-stats') || '{"n":0,"total":0,"best":0}');
+
+const rand = (a, b) => a + Math.random() * (b - a);
+// Commoner birds come up more often
+const weightOf = b => Math.log10(b.obs + 10);
+
+function pick(exclude) {
+  const pool = birds.filter(b => !exclude.includes(b.slug));
+  let t = Math.random() * pool.reduce((s, b) => s + weightOf(b), 0);
+  for (const b of pool) { if ((t -= weightOf(b)) <= 0) return b; }
+  return pool[pool.length - 1];
+}
+
+function pickPair() {
+  for (let i = 0; i < 200; i++) {
+    const a = pick([]), b = pick([a.slug]);
+    const r = Math.max(a.length_cm, b.length_cm) / Math.min(a.length_cm, b.length_cm);
+    if (r >= 1.12 && r <= 6) return [a, b];
+  }
+  const a = pick([]); return [a, pick([a.slug])];
+}
+
+// Screen px per image px for a bird drawn at `cmPx` screen px per cm of body length
+const fFor = (bird, cmPx) => cmPx * bird.length_cm / bird.length_px;
+
+function makeBird(bird, cls) {
+  const el = document.createElement('div');
+  el.className = 'bird ' + cls;
+  el.style.webkitMaskImage = el.style.maskImage = `url(${bird.img})`;
+  stage.appendChild(el);
+  return el;
+}
+
+function place(el, x, bottom, w, h) {
+  Object.assign(el.style, { left: x - w / 2 + 'px', top: bottom - h + 'px', width: w + 'px', height: h + 'px' });
+}
+
+function addLabel(bird, x, y, cls) {
+  const l = document.createElement('div');
+  l.className = 'label ' + cls;
+  l.innerHTML = `${bird.name}<br><i>${bird.sci}</i>`;
+  l.style.left = x + 'px'; l.style.top = y + 'px';
+  stage.appendChild(l);
+  return l;
+}
+
+function newRound() {
+  stage.querySelectorAll('.bird,.handle,.label').forEach(e => e.remove());
+  locked = false;
+  const [blk, red] = pickPair();
+  const W = stage.clientWidth, H = stage.clientHeight, groundY = H * 0.86;
+  $('ground').style.top = groundY + 'px';
+
+  // Pick a screen scale independent of the answer, such that both birds at true
+  // size fit comfortably in their half of the stage.
+  const fits = cm => [blk, red].every(b => {
+    const f = fFor(b, cm); return b.w * f <= W * 0.44 && b.h * f <= groundY * 0.92;
+  });
+  let cmPx = null;
+  for (let i = 0; i < 60 && !cmPx; i++) {
+    const c = rand(0.14, 0.34) * Math.min(W, H * 1.4) / blk.length_cm;
+    if (fits(c)) cmPx = c;
+  }
+  if (!cmPx) { cmPx = 1000; while (!fits(cmPx)) cmPx *= 0.95; }
+
+  const fb = fFor(blk, cmPx), bx = W * 0.27;
+  place(makeBird(blk, 'black'), bx, groundY, blk.w * fb, blk.h * fb);
+  addLabel(blk, bx, groundY + 6, '');
+
+  // Red starts at a random size unrelated to the answer
+  let f = blk.length_px * fb * rand(0.45, 1.8) / red.length_px;
+  f = Math.min(f, (W * 0.4) / red.w, (groundY * 0.85) / red.h);
+  const redEl = makeBird(red, 'red');
+  const redLabel = addLabel(red, 0, 0, 'red');
+  const handles = ['nw', 'ne', 'sw', 'se'].map(c => {
+    const h = document.createElement('div'); h.className = 'handle ' + c; h.dataset.c = c; stage.appendChild(h); return h;
+  });
+  round = { blk, red, cmPx, st: { x: W * 0.72, bottom: groundY, f }, redEl, redLabel, handles, W, H };
+  drawRed();
+  wireDrag(redEl, handles);
+
+  $('prompt').innerHTML = `How big is the <span class="red">${red.name}</span> next to the <span class="blk">${blk.name}</span>?`;
+  $('result').innerHTML = HINT;
+  $('btn').textContent = 'Lock in';
+  $('credits').innerHTML = '';
+  renderStats();
+}
+
+function redBox() {
+  const { red, st } = round;
+  const w = red.w * st.f, h = red.h * st.f;
+  return { x0: st.x - w / 2, y0: st.bottom - h, x1: st.x + w / 2, y1: st.bottom, w, h };
+}
+
+function drawRed() {
+  const b = redBox();
+  place(round.redEl, round.st.x, round.st.bottom, b.w, b.h);
+  const pos = { nw: [b.x0, b.y0], ne: [b.x1, b.y0], sw: [b.x0, b.y1], se: [b.x1, b.y1] };
+  round.handles.forEach(h => { const [x, y] = pos[h.dataset.c]; h.style.left = x + 'px'; h.style.top = y + 'px'; });
+  round.redLabel.style.left = round.st.x + 'px';
+  round.redLabel.style.top = round.st.bottom + 6 + 'px';
+}
+
+const clampF = f => {
+  const m = Math.max(round.red.w, round.red.h);
+  return Math.min(Math.max(round.W, round.H) * 1.2 / m, Math.max(12 / m, f));
+};
+
+function wireDrag(redEl, handles) {
+  const local = e => { const r = stage.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const track = (el, e, move, done) => {
+    el.setPointerCapture(e.pointerId);
+    const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); done && done(); };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+  };
+  redEl.addEventListener('pointerdown', e => {
+    if (locked) return;
+    e.preventDefault(); redEl.classList.add('dragging');
+    const [px, py] = local(e), { x, bottom } = round.st;
+    track(redEl, e, ev => {
+      const [qx, qy] = local(ev); round.st.x = x + qx - px; round.st.bottom = bottom + qy - py; drawRed();
+    }, () => redEl.classList.remove('dragging'));
+  });
+  handles.forEach(h => h.addEventListener('pointerdown', e => {
+    if (locked) return;
+    e.preventDefault(); e.stopPropagation();
+    const c = h.dataset.c, b = redBox();
+    // Anchor the opposite corner
+    const ax = c.includes('w') ? b.x1 : b.x0, ay = c.includes('n') ? b.y1 : b.y0;
+    const { w: rw, h: rh } = round.red;
+    track(h, e, ev => {
+      const [qx, qy] = local(ev);
+      const f = clampF(Math.max(Math.abs(qx - ax) / rw, Math.abs(qy - ay) / rh));
+      round.st.f = f;
+      round.st.x = c.includes('w') ? ax - rw * f / 2 : ax + rw * f / 2;
+      round.st.bottom = c.includes('n') ? ay : ay + rh * f;
+      drawRed();
+    });
+  }));
+}
+
+stage.addEventListener('wheel', e => {
+  if (locked || !round) return;
+  e.preventDefault();
+  const b = redBox(), cy = (b.y0 + b.y1) / 2;
+  const nf = clampF(round.st.f * Math.exp(-e.deltaY * 0.0015));
+  round.st.bottom = cy + round.red.h * nf / 2;
+  round.st.f = nf;
+  drawRed();
+}, { passive: false });
+
+const fmt = cm => cm >= 100 ? (cm / 100).toFixed(2) + ' m' : Math.round(cm) + ' cm';
+const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function lockIn() {
+  locked = true;
+  const { red, blk, st, cmPx } = round;
+  const fTrue = fFor(red, cmPx);
+  const ratio = st.f / fTrue;
+  const accuracy = Math.round(100 * Math.min(ratio, 1 / ratio));
+  round.handles.forEach(h => h.remove());
+  round.redEl.className = 'bird guess';
+
+  // Animate from the guess to the true size, keeping the bottom-centre fixed
+  const truth = makeBird(red, 'truth'), b = redBox();
+  place(truth, st.x, st.bottom, b.w, b.h);
+  requestAnimationFrame(() => requestAnimationFrame(() => place(truth, st.x, st.bottom, red.w * fTrue, red.h * fTrue)));
+
+  const pct = Math.round(Math.abs(ratio - 1) * 100);
+  $('result').innerHTML = `<b>${accuracy}%</b> &nbsp; You made it ${fmt(red.length_cm * ratio)} — it's really ${fmt(red.length_cm)} ` +
+    `<span class="hint">(${pct}% too ${ratio > 1 ? 'big' : 'small'}; the ${esc(blk.name)} is ${fmt(blk.length_cm)})</span>`;
+  stats.n++; stats.total += accuracy; stats.best = Math.max(stats.best, accuracy);
+  localStorage.setItem('bsu-stats', JSON.stringify(stats));
+  renderStats();
+  $('btn').textContent = 'Next bird';
+  $('credits').innerHTML = 'Silhouettes traced from iNaturalist photos: ' + [blk, red].map(x =>
+    `${esc(x.name)} — <a href="${esc(x.credit.url)}" target="_blank" rel="noopener">${esc(x.credit.attribution)}</a>`
+  ).join(' · ') + ' · Lengths: Garnett et al. (2015), Australian Bird Data v1';
+}
+
+function renderStats() {
+  $('stats').textContent = stats.n ? `${stats.n} played · avg ${Math.round(stats.total / stats.n)}% · best ${stats.best}%` : '';
+}
+
+$('btn').addEventListener('click', () => locked ? newRound() : lockIn());
+document.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('btn').click(); } });
+window.addEventListener('resize', () => { if (!locked) newRound(); });
+
+fetch('birds.json').then(r => r.json()).then(b => { birds = b; newRound(); });
+</script>
+</body>
+</html>

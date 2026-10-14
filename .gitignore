@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+data/photos/
+data/silhouettes/
+data/sheets/
+data/*.log
+data/*.lock
+data/*.tmp
+.DS_Store
