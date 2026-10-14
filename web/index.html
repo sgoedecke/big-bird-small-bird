@@ -157,7 +157,7 @@ function newRound() {
   });
   let cmPx = null;
   for (let i = 0; i < 60 && !cmPx; i++) {
-    const c = rand(0.32, 0.77) * Math.min(maxW, slotH * 0.8) / blk.length_cm;
+    const c = rand(0.42, 1.0) * Math.min(maxW, slotH * 0.8) / blk.length_cm;
     if (fits(c)) cmPx = c;
   }
   if (!cmPx) { cmPx = 1000; while (!fits(cmPx)) cmPx *= 0.95; }
